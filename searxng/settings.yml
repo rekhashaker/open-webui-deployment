@@ -1,0 +1,56 @@
+# SearXNG - Config for Open WebUI integration
+use_default_settings: true
+
+general:
+  instance_title: "Team AI Search"
+  enable_metrics: false
+
+server:
+  secret_key: "${SEARXNG_SECRET_KEY}"
+  limiter: false
+  image_proxy: false
+  method: "POST"
+
+search:
+  safe_search: 0
+  default_lang: "auto"
+  formats:
+    - html
+    - json            # Required for Open WebUI API integration
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 30.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: arxiv
+    timeout: 6.0
+
+ui:
+  default_theme: simple
+  infinite_scroll: false

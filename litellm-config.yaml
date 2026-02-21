@@ -1,0 +1,102 @@
+###############################################################################
+# LiteLLM Proxy Configuration
+# Add/remove models freely - restart litellm container to pick up changes
+###############################################################################
+
+model_list:
+
+  # --- OpenAI Models ---
+#  - model_name: gpt-4o
+#    litellm_params:
+#      model: openai/gpt-4o
+#      api_key: os.environ/OPENAI_API_KEY
+
+#  - model_name: gpt-4o-mini
+#    litellm_params:
+#      model: openai/gpt-4o-mini
+#      api_key: os.environ/OPENAI_API_KEY
+
+#  - model_name: o3-mini
+#    litellm_params:
+#      model: openai/o3-mini
+#      api_key: os.environ/OPENAI_API_KEY
+
+  # --- Anthropic Models ---
+#  - model_name: claude-opus-4
+#    litellm_params:
+#      model: anthropic/claude-opus-4-5
+#      api_key: os.environ/ANTHROPIC_API_KEY
+
+#  - model_name: claude-sonnet-4
+#    litellm_params:
+#      model: anthropic/claude-sonnet-4-5
+#      api_key: os.environ/ANTHROPIC_API_KEY
+
+#  - model_name: claude-haiku-4
+#    litellm_params:
+#      model: anthropic/claude-haiku-4-5-20251001
+#      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # --- Add more backends below as needed ---
+  # Example: Local Ollama (if you add it later)
+  # - model_name: llama3.2
+  #   litellm_params:
+  #     model: ollama/llama3.2
+  #     api_base: http://host.docker.internal:11434
+
+  # Example: Azure OpenAI
+  # - model_name: azure-gpt4
+  #   litellm_params:
+  #     model: azure/gpt-4
+  #     api_base: https://YOUR_RESOURCE.openai.azure.com/
+  #     api_version: "2024-02-15-preview"
+  #     api_key: os.environ/AZURE_API_KEY
+
+###############################################################################
+# Router Settings
+###############################################################################
+
+router_settings:
+  routing_strategy: least-busy     # Options: simple-shuffle | least-busy | latency-based
+  retry_after: 5
+  num_retries: 3
+
+###############################################################################
+# General Settings
+###############################################################################
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+  # Spend tracking - useful for team usage monitoring
+  track_cost_callback: true
+
+  # Allow team members to create their own virtual keys via LiteLLM UI
+  # Access LiteLLM UI at http://<unraid-ip>:4000/ui (not exposed externally by default)
+  enable_jwt_auth: false
+
+###############################################################################
+# Caching (Redis)
+###############################################################################
+
+cache: true
+cache_params:
+  type: redis
+  host: redis
+  port: 6379
+  ttl: 600                  # Cache TTL in seconds (10 minutes default)
+  similarity_threshold: 0.8 # For semantic caching - tune between 0.0-1.0
+                             # Higher = more exact match required
+                             # Lower = more aggressive cache hits
+
+  # pgvector for semantic similarity search
+  vector_store: pgvector
+  pgvector_connection_string: os.environ/LITELLM_PGVECTOR_URL
+  embedding_model: openai/text-embedding-3-large  # Model used to embed queries for semantic search
+
+litellm_settings:
+  # Logging - set to true for verbose debugging, false in production
+  set_verbose: false
+  drop_params: true           # Silently drop unsupported params (e.g. Anthropic doesn't support some OpenAI params)
+  request_timeout: 120

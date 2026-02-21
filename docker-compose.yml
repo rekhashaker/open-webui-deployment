@@ -1,0 +1,190 @@
+###############################################################################
+# AI Stack - docker-compose.yml
+# Services: Open WebUI | LiteLLM | PostgreSQL + pgvector
+# Network:  ai-net (internal bridge, only WebUI port exposed)
+# Storage:  /mnt/user/appdata/ai-stack/
+###############################################################################
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL with pgvector
+  # Handles both Open WebUI app state AND vector embeddings
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      - ai-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # Used by LiteLLM for response caching
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ai-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    networks:
+      - ai-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Proxy
+  # Unified OpenAI-compatible endpoint routing to OpenAI, Anthropic, etc.
+  # ---------------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: ai-litellm
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${LITELLM_DB}
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}      # Managed via LiteLLM UI
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}  # Managed via LiteLLM UI
+      STORE_MODEL_IN_DB: "True"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LITELLM_PGVECTOR_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${LITELLM_DB}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    ports:
+      - "4002:4000"  # Uncomment to expose LiteLLM UI on host port 4002
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    networks:
+      - ai-net
+
+  # ---------------------------------------------------------------------------
+  # Apache Tika
+  # Document content extraction for Open WebUI (PDF, Word, PowerPoint, etc.)
+  # ---------------------------------------------------------------------------
+  tika:
+    image: apache/tika:latest-full
+    container_name: ai-tika
+    restart: unless-stopped
+    networks:
+      - ai-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9998/tika || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+ 
+  # ---------------------------------------------------------------------------
+  # SearXNG
+  # Self-hosted meta search engine for Open WebUI web search feature
+  # ---------------------------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: ai-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY}
+      SEARXNG_BASE_URL: http://searxng:8080
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ${DATA_ROOT}/searxng:/etc/searxng/data
+    networks:
+      - ai-net
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+             
+  # ---------------------------------------------------------------------------
+  # Open WebUI
+  # Team-facing frontend. Auth config via environment - see .env
+  # ---------------------------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ai-open-webui
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+      tika:
+        condition: service_healthy
+    ports:
+      - "${WEBUI_PORT:-8089}:8080"
+    environment:
+      # --- Content Extraction ---
+      TIKA_SERVER_URL: http://tika:9998
+
+      # --- Database (Postgres replaces SQLite) ---
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${OPENWEBUI_DB}
+
+      # --- LiteLLM as the OpenAI-compatible backend ---
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+
+      # --- Disable direct Ollama (routing through LiteLLM instead) ---
+      ENABLE_OLLAMA_API: "false"
+
+      # --- Vector store (pgvector via same Postgres) ---
+      VECTOR_DB: pgvector
+      PGVECTOR_DB_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${OPENWEBUI_DB}
+
+      # --- Team / Auth settings ---
+      WEBUI_NAME: ${WEBUI_NAME:-"Team AI"}
+      DEFAULT_USER_ROLE: ${DEFAULT_USER_ROLE:-pending}  # pending = admin approves signups
+      ENABLE_SIGNUP: ${ENABLE_SIGNUP:-true}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+
+      # --- Agentic / Tools ---
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_MESSAGE_RATING: "true"
+      ENABLE_TOOLS: "true"
+      ENABLE_CODE_EXECUTION: "true"
+
+      # --- OAuth placeholder (uncomment + configure in .env to enable) ---
+      # ENABLE_OAUTH_SIGNUP: "true"
+      # OAUTH_PROVIDER_NAME: "Google"
+      # GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      # GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+
+    volumes:
+      - ${DATA_ROOT}/open-webui:/app/backend/data
+    networks:
+      - ai-net
+
+networks:
+  ai-net:
+    name: ai-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
