@@ -178,6 +178,10 @@ services:
 
     volumes:
       - ${DATA_ROOT}/open-webui:/app/backend/data
+      # Patch: merge model-level toolIds server-side (like skillIds).
+      # Re-copy and re-patch after Open WebUI updates:
+      #   docker cp ai-open-webui:/app/backend/open_webui/utils/middleware.py patches/middleware.py
+      - ./patches/middleware.py:/app/backend/open_webui/utils/middleware.py:ro
     networks:
       - ai-net
 

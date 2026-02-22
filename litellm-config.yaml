@@ -99,4 +99,5 @@ litellm_settings:
   # Logging - set to true for verbose debugging, false in production
   set_verbose: false
   drop_params: true           # Silently drop unsupported params (e.g. Anthropic doesn't support some OpenAI params)
-  request_timeout: 120
+  request_timeout: 300        # ← change from 120 to 300
+  stream_timeout: 120         # ← add this new line
