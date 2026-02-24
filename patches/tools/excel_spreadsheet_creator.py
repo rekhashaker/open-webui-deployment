@@ -5,7 +5,7 @@ description: >
   Creates formatted Excel (.xlsx) spreadsheets from structured data.
   Supports multiple sheets, styled headers, data formatting, and totals rows.
   Registers the file with Open WebUI and returns a proper download link.
-version: 3.1.0
+version: 3.2.0
 requirements: openpyxl
 """
 
@@ -19,6 +19,58 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers — NOT class methods, so they are excluded from the
+# tool specs that Open WebUI generates (dir(Tools()) only returns class attrs).
+# ---------------------------------------------------------------------------
+
+def _get_public_base_url(webui_base_url: str, request) -> str:
+    """URL for user-facing download links: valve > request.base_url > fallback."""
+    if webui_base_url:
+        return webui_base_url.rstrip("/")
+    if request and hasattr(request, "base_url"):
+        return str(request.base_url).rstrip("/")
+    return "http://localhost:8080"
+
+
+def _get_token(request) -> str:
+    if request and hasattr(request, "headers"):
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+    return ""
+
+
+async def _upload_file(file_path: str, filename: str, token: str) -> str:
+    if not token:
+        raise ValueError(
+            "No Bearer token found in request. "
+            "Check that __request__ is declared in the function signature."
+        )
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as client:
+        with open(file_path, "rb") as f:
+            resp = await client.post(
+                "http://localhost:8080/api/v1/files/",
+                headers=headers,
+                files={
+                    "file": (
+                        filename,
+                        f,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                params={"process": "false"},
+                timeout=60,
+            )
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# Tool class — only create_spreadsheet is exposed as a callable spec.
+# ---------------------------------------------------------------------------
+
 class Tools:
     class Valves(BaseModel):
         WEBUI_BASE_URL: str = Field(
@@ -31,25 +83,6 @@ class Tools:
 
     def __init__(self):
         self.valves = self.Valves()
-
-    def _get_public_base_url(self, request) -> str:
-        """URL for user-facing download links: valve > request.base_url > fallback."""
-        if self.valves.WEBUI_BASE_URL:
-            return self.valves.WEBUI_BASE_URL.rstrip("/")
-        if request and hasattr(request, "base_url"):
-            return str(request.base_url).rstrip("/")
-        return "http://localhost:8080"
-
-    def _get_internal_base_url(self) -> str:
-        """URL for server-side API calls (always localhost inside the container)."""
-        return "http://localhost:8080"
-
-    def _get_token(self, request) -> str:
-        if request and hasattr(request, "headers"):
-            auth = request.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                return auth[7:]
-        return ""
 
     async def create_spreadsheet(
         self,
@@ -191,10 +224,9 @@ class Tools:
                     {"type": "status", "data": {"description": "Uploading...", "done": False}}
                 )
 
-            public_url = self._get_public_base_url(__request__)
-            token = self._get_token(__request__)
-            internal_url = self._get_internal_base_url()
-            file_id = await self._upload_file(tmp_path, xlsx_filename, token, internal_url)
+            public_url = _get_public_base_url(self.valves.WEBUI_BASE_URL, __request__)
+            token = _get_token(__request__)
+            file_id = await _upload_file(tmp_path, xlsx_filename, token)
             os.unlink(tmp_path)
 
             sheet_names = [
@@ -223,30 +255,3 @@ class Tools:
 
         except Exception as e:
             return f"❌ Spreadsheet creation failed: {str(e)}"
-
-    async def _upload_file(
-        self, file_path: str, filename: str, token: str, internal_url: str
-    ) -> str:
-        if not token:
-            raise ValueError(
-                "No Bearer token found in request. "
-                "Check that __request__ is declared in the function signature."
-            )
-        headers = {"Authorization": f"Bearer {token}"}
-        async with httpx.AsyncClient() as client:
-            with open(file_path, "rb") as f:
-                resp = await client.post(
-                    f"{internal_url}/api/v1/files/",
-                    headers=headers,
-                    files={
-                        "file": (
-                            filename,
-                            f,
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
-                    },
-                    params={"process": "false"},
-                    timeout=60,
-                )
-        resp.raise_for_status()
-        return resp.json()["id"]

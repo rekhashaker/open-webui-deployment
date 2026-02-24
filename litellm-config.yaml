@@ -72,6 +72,10 @@ general_settings:
   # Spend tracking - useful for team usage monitoring
   track_cost_callback: true
 
+  # Per-user attribution: read end_user identity from this header sent by Open WebUI
+  # (requires ENABLE_FORWARD_USER_INFO_HEADERS=true in Open WebUI)
+  user_header_name: "X-OpenWebUI-User-Email"
+
   # Allow team members to create their own virtual keys via LiteLLM UI
   # Access LiteLLM UI at http://<unraid-ip>:4000/ui (not exposed externally by default)
   enable_jwt_auth: false

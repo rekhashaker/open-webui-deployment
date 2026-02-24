@@ -164,6 +164,9 @@ services:
       ENABLE_SIGNUP: ${ENABLE_SIGNUP:-true}
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
 
+      # --- Per-user tracking (forwards identity headers to LiteLLM for spend tracking) ---
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+
       # --- Agentic / Tools ---
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_MESSAGE_RATING: "true"
@@ -176,6 +179,9 @@ services:
       # GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       # GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
 
+    # Pre-install tool dependencies before starting (persists across restarts)
+    command: >
+      bash -c "pip install python-docx reportlab --quiet && bash start.sh"
     volumes:
       - ${DATA_ROOT}/open-webui:/app/backend/data
       # Patch: merge model-level toolIds server-side (like skillIds).

@@ -5,7 +5,7 @@ description: >
   Creates formatted Word (.docx) documents from structured content.
   Supports headings, paragraphs, tables, bullet lists, and basic styling.
   Registers the file with Open WebUI and returns a proper download link.
-version: 3.4.0
+version: 3.5.0
 requirements: python-docx
 """
 
@@ -19,6 +19,86 @@ from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers — NOT class methods, so they are excluded from the
+# tool specs that Open WebUI generates (dir(Tools()) only returns class attrs).
+# ---------------------------------------------------------------------------
+
+def _get_public_base_url(webui_base_url: str, request) -> str:
+    """URL for user-facing download links: valve > request.base_url > fallback."""
+    if webui_base_url:
+        return webui_base_url.rstrip("/")
+    if request and hasattr(request, "base_url"):
+        return str(request.base_url).rstrip("/")
+    return "http://localhost:8080"
+
+
+def _get_token(request) -> str:
+    if request and hasattr(request, "headers"):
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+    return ""
+
+
+async def _upload_file(file_path: str, filename: str, token: str) -> str:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "http://localhost:8080/api/v1/files/?process=false",
+            headers=headers,
+            files={"file": (filename, file_bytes, mime)},
+        )
+
+    if resp.status_code == 401:
+        raise RuntimeError(
+            "Upload failed: not authenticated. "
+            "Check that __request__ is declared in the function signature."
+        )
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def _add_formatted_run(para, text: str):
+    parts = re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", text)
+    for part in parts:
+        if part.startswith("**") and part.endswith("**"):
+            run = para.add_run(part[2:-2])
+            run.bold = True
+        elif part.startswith("*") and part.endswith("*"):
+            run = para.add_run(part[1:-1])
+            run.italic = True
+        else:
+            para.add_run(part)
+
+
+def _flush_table(doc, rows: list):
+    if not rows:
+        return
+    col_count = max(len(r) for r in rows)
+    table = doc.add_table(rows=len(rows), cols=col_count)
+    table.style = "Table Grid"
+    for r_idx, row in enumerate(rows):
+        for c_idx, cell_text in enumerate(row):
+            cell = table.cell(r_idx, c_idx)
+            cell.text = cell_text
+            if r_idx == 0:
+                for run in cell.paragraphs[0].runs:
+                    run.bold = True
+    doc.add_paragraph()
+
+
+# ---------------------------------------------------------------------------
+# Tool class — only create_word_document is exposed as a callable spec.
+# ---------------------------------------------------------------------------
+
 class Tools:
     class Valves(BaseModel):
         WEBUI_BASE_URL: str = Field(
@@ -31,26 +111,6 @@ class Tools:
 
     def __init__(self):
         self.valves = self.Valves()
-
-    def _get_internal_base_url(self) -> str:
-        """URL for server-side API calls (always container-internal)."""
-        return "http://localhost:8080"
-
-    def _get_public_base_url(self, request) -> str:
-        """URL for user-facing download links: valve > request.base_url > fallback."""
-        if self.valves.WEBUI_BASE_URL:
-            return self.valves.WEBUI_BASE_URL.rstrip("/")
-        if request and hasattr(request, "base_url"):
-            return str(request.base_url).rstrip("/")
-        return "http://localhost:8080"
-
-    def _get_token(self, request) -> str:
-        """Extract Bearer token from the incoming request headers."""
-        if request and hasattr(request, "headers"):
-            auth = request.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                return auth[7:]
-        return ""
 
     async def create_word_document(
         self,
@@ -108,25 +168,25 @@ class Tools:
 
             for line in lines:
                 if line.startswith("# "):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     doc.add_heading(line[2:].strip(), level=1)
 
                 elif line.startswith("## "):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     doc.add_heading(line[3:].strip(), level=2)
 
                 elif line.startswith("### "):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     doc.add_heading(line[4:].strip(), level=3)
 
                 elif line.startswith("- ") or line.startswith("* "):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     para = doc.add_paragraph(style="List Bullet")
-                    self._add_formatted_run(para, line[2:].strip())
+                    _add_formatted_run(para, line[2:].strip())
 
                 elif (
                     len(line) > 2
@@ -134,10 +194,10 @@ class Tools:
                     and line[1] in ".)"
                     and line[2] == " "
                 ):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     para = doc.add_paragraph(style="List Number")
-                    self._add_formatted_run(para, line[3:].strip())
+                    _add_formatted_run(para, line[3:].strip())
 
                 elif line.startswith("|"):
                     cells = [c.strip() for c in line.strip("|").split("|")]
@@ -145,17 +205,17 @@ class Tools:
                         table_rows.append(cells)
 
                 elif line.strip() in ("---", "***", "___"):
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     doc.add_page_break()
 
                 elif line.strip():
-                    self._flush_table(doc, table_rows)
+                    _flush_table(doc, table_rows)
                     table_rows = []
                     para = doc.add_paragraph()
-                    self._add_formatted_run(para, line.strip())
+                    _add_formatted_run(para, line.strip())
 
-            self._flush_table(doc, table_rows)
+            _flush_table(doc, table_rows)
 
             # Save to temp file
             safe_name = re.sub(r"[^\w\-]", "_", filename).strip("_")
@@ -170,11 +230,9 @@ class Tools:
                     {"type": "status", "data": {"description": "Uploading to Open WebUI…", "done": False}}
                 )
 
-            # Upload to Open WebUI files API
-            internal_url = self._get_internal_base_url()
-            public_url = self._get_public_base_url(__request__)
-            token = self._get_token(__request__)
-            file_id = await self._upload_file(tmp_path, docx_filename, token, internal_url)
+            public_url = _get_public_base_url(self.valves.WEBUI_BASE_URL, __request__)
+            token = _get_token(__request__)
+            file_id = await _upload_file(tmp_path, docx_filename, token)
             os.unlink(tmp_path)
 
             # Download link uses the public URL so users can click it in their browser
@@ -184,8 +242,6 @@ class Tools:
                 await __event_emitter__(
                     {"type": "status", "data": {"description": "Done", "done": True}}
                 )
-                # Inject the download link directly into the chat message so it always
-                # appears regardless of how the model phrases its response.
                 await __event_emitter__(
                     {
                         "type": "message",
@@ -201,56 +257,3 @@ class Tools:
                     {"type": "status", "data": {"description": f"Error: {e}", "done": True}}
                 )
             return f"❌ Document creation failed: {str(e)}"
-
-    async def _upload_file(self, file_path: str, filename: str, token: str, internal_url: str) -> str:
-        """Upload file to Open WebUI internal API and return the file ID."""
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{internal_url}/api/v1/files/?process=false",
-                headers=headers,
-                files={"file": (filename, file_bytes, mime)},
-            )
-
-        if resp.status_code == 401:
-            raise RuntimeError(
-                "Upload failed: not authenticated. "
-                "Check that __request__ is declared in the function signature."
-            )
-        resp.raise_for_status()
-        return resp.json()["id"]
-
-    def _add_formatted_run(self, para, text: str):
-        parts = re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", text)
-        for part in parts:
-            if part.startswith("**") and part.endswith("**"):
-                run = para.add_run(part[2:-2])
-                run.bold = True
-            elif part.startswith("*") and part.endswith("*"):
-                run = para.add_run(part[1:-1])
-                run.italic = True
-            else:
-                para.add_run(part)
-
-    def _flush_table(self, doc, rows: list):
-        if not rows:
-            return
-        col_count = max(len(r) for r in rows)
-        table = doc.add_table(rows=len(rows), cols=col_count)
-        table.style = "Table Grid"
-        for r_idx, row in enumerate(rows):
-            for c_idx, cell_text in enumerate(row):
-                cell = table.cell(r_idx, c_idx)
-                cell.text = cell_text
-                if r_idx == 0:
-                    for run in cell.paragraphs[0].runs:
-                        run.bold = True
-        doc.add_paragraph()
-
